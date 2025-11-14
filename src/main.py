@@ -9,6 +9,7 @@ Supports format and diff modes
 import json
 import re
 import sys
+import os
 import difflib
 from typing import Any, Dict, List, Union, Tuple, Optional
 from pathlib import Path
@@ -554,12 +555,18 @@ def format_size(size_bytes: int) -> str:
 
 def parse_mode() -> str:
     """
-    Parse operation mode from command line or interactive input
+    Parse operation mode from command line, environment, or interactive input
+    
+    Priority:
+    1. Command line argument: python main.py diff
+    2. Environment variable: MAA_FORMAT_MODE=diff
+    3. Interactive input (only if TTY available)
+    4. Default: diff (for non-interactive environments)
     
     Returns:
         'format' or 'diff'
     """
-    # Check command line arguments
+    # 1. Command line arguments take precedence
     if len(sys.argv) > 1:
         mode = sys.argv[1].lower()
         if mode in ['format', 'diff']:
@@ -574,27 +581,42 @@ def parse_mode() -> str:
             print("  python main.py           # Interactive mode selection")
             sys.exit(1)
     
-    # Interactive selection
-    print("Select operation mode:")
-    print("  1. Format - Format files and save to output/")
-    print("  2. Diff   - Generate diff files only to diff/")
-    print()
+    # 2. Environment Variables (for CI/CD)
+    if 'MAA_FORMAT_MODE' in os.environ:
+        mode = os.environ['MAA_FORMAT_MODE'].lower()
+        if mode in ['format', 'diff']:
+            print(f"[INFO] Mode from environment variable: {mode}")
+            return mode
+        else:
+            print(f"[WARN] Invalid MAA_FORMAT_MODE: {mode}, ignoring")
     
-    while True:
-        try:
-            choice = input("Enter your choice (1/2): ").strip()
-            if choice == '1':
-                return 'format'
-            elif choice == '2':
-                return 'diff'
-            else:
-                print("[WARN] Invalid choice, please enter 1 or 2")
-        except KeyboardInterrupt:
-            print("\n[FAIL] Operation cancelled")
-            sys.exit(1)
-        except EOFError:
-            print("\n[FAIL] Operation cancelled")
-            sys.exit(1)
+    # 3. Interactive selection (only when TTY is available)
+    if sys.stdin.isatty():
+        print("Select operation mode:")
+        print("  1. Format - Format files and save to output/")
+        print("  2. Diff   - Generate diff files only to diff/")
+        print()
+        
+        while True:
+            try:
+                choice = input("Enter your choice (1/2): ").strip()
+                if choice == '1':
+                    return 'format'
+                elif choice == '2':
+                    return 'diff'
+                else:
+                    print("[WARN] Invalid choice, please enter 1 or 2")
+            except KeyboardInterrupt:
+                print("\n[FAIL] Operation cancelled")
+                sys.exit(1)
+            except EOFError:
+                print("\n[FAIL] Operation cancelled")
+                sys.exit(1)
+    else:
+        # 4. Non-interactive environment default
+        print("[INFO] Non-interactive environment detected (no TTY)")
+        print("[INFO] Using default mode: diff")
+        return 'diff'
 
 
 # ============================================================================
@@ -667,17 +689,22 @@ def main():
     else:
         prompt = f"Generate diff for these {len(json_files)} files? (y/n): "
     
-    try:
-        confirm = input(prompt).strip().lower()
-        if confirm != 'y':
-            print("[FAIL] Operation cancelled")
+    # Automatic confirmation in non-interactive environments
+    if not sys.stdin.isatty():
+        print(f"[INFO] Non-interactive mode: auto-confirming processing")
+        confirm = 'y'
+    else:
+        try:
+            confirm = input(prompt).strip().lower()
+            if confirm != 'y':
+                print("[FAIL] Operation cancelled")
+                return
+        except KeyboardInterrupt:
+            print("\n[FAIL] Operation cancelled")
             return
-    except KeyboardInterrupt:
-        print("\n[FAIL] Operation cancelled")
-        return
-    except EOFError:
-        print("\n[FAIL] Operation cancelled")
-        return
+        except EOFError:
+            print("\n[FAIL] Operation cancelled")
+            return
     
     print()
     print("=" * 70)
