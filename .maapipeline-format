@@ -1,8 +1,8 @@
 {
     "version": "1.0",
     "indent": {
-        "style": "space",
-        "width": 4
+        "style": "tab",
+        "width": 1
     },
     "formatting": {
         "simple_array_threshold": 50,
@@ -35,7 +35,7 @@
     },
     "file_handling": {
         "preserve_comments": true,
-        "output_suffix": ".formatted",
+        "output_suffix": "",
         "encoding": "utf-8",
         "newline": "LF"
     }
