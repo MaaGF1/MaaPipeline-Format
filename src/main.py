@@ -3,7 +3,7 @@
 """
 Maa Pipeline JSON Formatter
 Format MaaFramework Pipeline JSON files (Batch Processing Mode)
-Supports format and diff modes
+Supports format and diff modes with flexible path handling
 """
 
 import json
@@ -11,13 +11,14 @@ import re
 import sys
 import os
 import difflib
+import argparse
 from typing import Any, Dict, List, Union, Tuple, Optional
 from pathlib import Path
 from datetime import datetime
 
 
 # ============================================================================
-# Configuration Management
+# Configuration Management (保持不变)
 # ============================================================================
 
 DEFAULT_CONFIG = {
@@ -53,30 +54,15 @@ DEFAULT_CONFIG = {
 
 
 def find_config_file(start_path: Path) -> Optional[Path]:
-    """
-    Find .maapipeline-format config file by searching upward from start_path
-    
-    Search order:
-    1. Current directory and parent directories (recursively upward)
-    2. User home directory (~/.maapipeline-format)
-    3. None (use default config)
-    
-    Args:
-        start_path: Starting search path
-    
-    Returns:
-        Path to config file, or None if not found
-    """
+    """Find .maapipeline-format config file by searching upward"""
     current = start_path.resolve()
     
-    # Search upward from current directory
     while current != current.parent:
         config_file = current / ".maapipeline-format"
         if config_file.exists() and config_file.is_file():
             return config_file
         current = current.parent
     
-    # Check user home directory
     home_config = Path.home() / ".maapipeline-format"
     if home_config.exists() and home_config.is_file():
         return home_config
@@ -85,24 +71,13 @@ def find_config_file(start_path: Path) -> Optional[Path]:
 
 
 def load_config(config_path: Optional[Path] = None, search_from: Optional[Path] = None) -> Dict:
-    """
-    Load configuration from file or use defaults
-    
-    Args:
-        config_path: Explicit config file path (overrides search)
-        search_from: Directory to start config file search from
-    
-    Returns:
-        Configuration dictionary
-    """
-    # If explicit path provided, use it
+    """Load configuration from file or use defaults"""
     if config_path is not None:
         if not config_path.exists():
             print(f"[WARN] Config file not found: {config_path}")
             print(f"[INFO] Using default configuration")
             return DEFAULT_CONFIG.copy()
     else:
-        # Search for config file
         if search_from is None:
             search_from = Path.cwd()
         config_path = find_config_file(search_from)
@@ -111,16 +86,13 @@ def load_config(config_path: Optional[Path] = None, search_from: Optional[Path] 
         print(f"[INFO] No config file found, using default configuration")
         return DEFAULT_CONFIG.copy()
     
-    # Load and parse config
     try:
         print(f"[INFO] Loading config from: {config_path}")
         with open(config_path, 'r', encoding='utf-8') as f:
             user_config = json.load(f)
         
-        # Merge with defaults (user config overrides defaults)
         config = _merge_config(DEFAULT_CONFIG, user_config)
         
-        # Validate config
         valid, errors = _validate_config(config)
         if not valid:
             print(f"[WARN] Config validation failed:")
@@ -143,16 +115,7 @@ def load_config(config_path: Optional[Path] = None, search_from: Optional[Path] 
 
 
 def _merge_config(base: Dict, override: Dict) -> Dict:
-    """
-    Deep merge two config dictionaries (override takes precedence)
-    
-    Args:
-        base: Base configuration
-        override: Override configuration
-    
-    Returns:
-        Merged configuration
-    """
+    """Deep merge two config dictionaries"""
     result = base.copy()
     
     for key, value in override.items():
@@ -165,24 +128,14 @@ def _merge_config(base: Dict, override: Dict) -> Dict:
 
 
 def _validate_config(config: Dict) -> Tuple[bool, List[str]]:
-    """
-    Validate configuration dictionary
-    
-    Args:
-        config: Configuration to validate
-    
-    Returns:
-        (is_valid, error_messages)
-    """
+    """Validate configuration dictionary"""
     errors = []
     
-    # Version check
     if "version" not in config:
         errors.append("Missing 'version' field")
     elif config["version"] not in ["1.0"]:
         errors.append(f"Unsupported version: {config['version']}")
     
-    # Indent validation
     if "indent" in config:
         indent_cfg = config["indent"]
         if "style" in indent_cfg and indent_cfg["style"] not in ["space", "tab"]:
@@ -191,7 +144,6 @@ def _validate_config(config: Dict) -> Tuple[bool, List[str]]:
             if not isinstance(indent_cfg["width"], int) or indent_cfg["width"] < 1:
                 errors.append(f"Invalid indent width: {indent_cfg['width']}")
     
-    # Formatting validation
     if "formatting" in config:
         fmt_cfg = config["formatting"]
         if "simple_array_threshold" in fmt_cfg:
@@ -199,7 +151,6 @@ def _validate_config(config: Dict) -> Tuple[bool, List[str]]:
             if not isinstance(threshold, int) or threshold < 0:
                 errors.append(f"Invalid simple_array_threshold: {threshold}")
     
-    # File handling validation
     if "file_handling" in config:
         fh_cfg = config["file_handling"]
         if "diff_context_lines" in fh_cfg:
@@ -210,58 +161,30 @@ def _validate_config(config: Dict) -> Tuple[bool, List[str]]:
     return (len(errors) == 0, errors)
 
 
-def save_default_config(output_path: Path) -> bool:
-    """
-    Save default configuration to file
-    
-    Args:
-        output_path: Output file path
-    
-    Returns:
-        Success flag
-    """
-    try:
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(DEFAULT_CONFIG, f, indent=4, ensure_ascii=False)
-        return True
-    except Exception as e:
-        print(f"[FAIL] Failed to save default config: {e}")
-        return False
-
-
 # ============================================================================
-# Maa Pipeline Formatter
+# Maa Pipeline Formatter (保持不变)
 # ============================================================================
 
 class MaaPipelineFormatter:
     """MaaFramework Pipeline JSON Formatter"""
     
     def __init__(self, config: Optional[Dict] = None):
-        """
-        Initialize formatter with configuration
-        
-        Args:
-            config: Configuration dictionary (uses defaults if None)
-        """
         if config is None:
             config = DEFAULT_CONFIG.copy()
         
         self.config = config
         
-        # Parse indent settings
         indent_cfg = config["indent"]
         indent_char = "\t" if indent_cfg["style"] == "tab" else " "
         indent_width = indent_cfg["width"]
         self.indent = indent_char * indent_width
         
-        # Parse formatting settings
         fmt_cfg = config["formatting"]
         self.coordinate_fields = set(fmt_cfg["coordinate_fields"])
         self.control_flow_fields = set(fmt_cfg["control_flow_fields"])
         self.always_multiline_fields = set(fmt_cfg["always_multiline_fields"])
         self.simple_array_threshold = fmt_cfg["simple_array_threshold"]
         
-        # Parse file handling settings
         fh_cfg = config["file_handling"]
         self.preserve_comments = fh_cfg["preserve_comments"]
         self.output_suffix = fh_cfg["output_suffix"]
@@ -271,11 +194,9 @@ class MaaPipelineFormatter:
         self.diff_suffix = fh_cfg["diff_suffix"]
     
     def _is_simple_value(self, value: Any) -> bool:
-        """Check if value is simple (string/number/bool/null)"""
         return isinstance(value, (str, int, float, bool, type(None)))
     
     def _is_coordinate_array(self, key: str, value: Any) -> bool:
-        """Check if array is a coordinate array (should stay inline)"""
         if key not in self.coordinate_fields:
             return False
         if not isinstance(value, list):
@@ -283,7 +204,6 @@ class MaaPipelineFormatter:
         return all(isinstance(v, (int, float)) for v in value)
     
     def _should_inline_array(self, key: str, value: List) -> bool:
-        """Determine if array should be displayed inline"""
         if not value:
             return True
         
@@ -300,7 +220,6 @@ class MaaPipelineFormatter:
         return False
     
     def _should_inline_object(self, key: str, value: Dict) -> bool:
-        """Determine if object should be displayed inline"""
         if not value:
             return True
         
@@ -314,7 +233,6 @@ class MaaPipelineFormatter:
         return False
     
     def _format_value(self, key: str, value: Any, indent_level: int, parent_is_root: bool = False) -> str:
-        """Format a single value"""
         if self._is_simple_value(value):
             return json.dumps(value, ensure_ascii=False)
         
@@ -342,7 +260,6 @@ class MaaPipelineFormatter:
         return json.dumps(value, ensure_ascii=False)
     
     def _format_object(self, obj: Dict, indent_level: int, is_root: bool = False) -> str:
-        """Format an object"""
         if not obj:
             return "{}"
         
@@ -363,7 +280,6 @@ class MaaPipelineFormatter:
         return "\n".join(lines)
     
     def _preserve_comments(self, original_text: str, formatted_text: str) -> str:
-        """Preserve comments from original text"""
         original_lines = original_text.split('\n')
         formatted_lines = formatted_text.split('\n')
         
@@ -396,21 +312,11 @@ class MaaPipelineFormatter:
         return '\n'.join(result_lines)
     
     def _remove_comments(self, text: str) -> str:
-        """Remove JSON5 comments"""
         text = re.sub(r'//.*?$', '', text, flags=re.MULTILINE)
         text = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)
         return text
     
     def format_text(self, text: str) -> Tuple[bool, str, str]:
-        """
-        Format JSON text
-        
-        Args:
-            text: Original JSON text
-        
-        Returns:
-            (success, formatted_text, error_message)
-        """
         try:
             text_without_comments = self._remove_comments(text)
             
@@ -435,16 +341,6 @@ class MaaPipelineFormatter:
             return False, "", str(e)
     
     def format_file(self, input_path: Union[str, Path], output_path: Union[str, Path]) -> Tuple[bool, str]:
-        """
-        Format JSON file
-        
-        Args:
-            input_path: Input file path
-            output_path: Output file path
-        
-        Returns:
-            (success, error_message)
-        """
         input_path = Path(input_path)
         output_path = Path(output_path)
         
@@ -468,16 +364,6 @@ class MaaPipelineFormatter:
             return False, str(e)
     
     def generate_diff(self, input_path: Union[str, Path], output_path: Union[str, Path]) -> Tuple[bool, bool, str]:
-        """
-        Generate unified diff file
-        
-        Args:
-            input_path: Input file path
-            output_path: Output diff file path
-        
-        Returns:
-            (success, has_changes, error_message)
-        """
         input_path = Path(input_path)
         output_path = Path(output_path)
         
@@ -490,7 +376,6 @@ class MaaPipelineFormatter:
             if not success:
                 return False, False, error_msg
             
-            # Generate unified diff
             original_lines = original_text.splitlines(keepends=True)
             formatted_lines = formatted_text.splitlines(keepends=True)
             
@@ -503,7 +388,6 @@ class MaaPipelineFormatter:
                 lineterm=''
             ))
             
-            # Check if there are any changes
             has_changes = len(diff_lines) > 0
             
             if has_changes:
@@ -529,21 +413,6 @@ def scan_json_files(base_dir: Path) -> List[Path]:
     return sorted(base_dir.rglob("*.json"))
 
 
-def get_output_path(input_path: Path, input_dir: Path, output_dir: Path, suffix: str) -> Path:
-    """Calculate output path preserving directory structure"""
-    relative_path = input_path.relative_to(input_dir)
-    output_path = output_dir / relative_path
-    
-    if suffix.startswith('.'):
-        # Extension-like suffix (e.g., .diff)
-        output_path = output_path.parent / f"{output_path.name}{suffix}"
-    else:
-        # Stem suffix (e.g., .formatted)
-        output_path = output_path.with_stem(f"{output_path.stem}{suffix}")
-    
-    return output_path
-
-
 def format_size(size_bytes: int) -> str:
     """Format file size"""
     for unit in ['B', 'KB', 'MB', 'GB']:
@@ -553,70 +422,71 @@ def format_size(size_bytes: int) -> str:
     return f"{size_bytes:.2f} TB"
 
 
-def parse_mode() -> str:
-    """
-    Parse operation mode from command line, environment, or interactive input
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(
+        description='Maa Pipeline JSON Formatter - Format MaaFramework pipeline JSON files',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Format files in-place (modify original files)
+  python main.py /path/to/pipeline/tasks --in-place
+  
+  # Generate diff files only (to review changes)
+  python main.py /path/to/pipeline/tasks --diff-only --diff-dir ./diffs
+  
+  # Format and generate diffs
+  python main.py /path/to/pipeline/tasks --in-place --diff-dir ./diffs
+  
+  # Non-interactive mode (for CI/CD)
+  python main.py /path/to/pipeline/tasks --in-place --yes
+        """
+    )
     
-    Priority:
-    1. Command line argument: python main.py diff
-    2. Environment variable: MAA_FORMAT_MODE=diff
-    3. Interactive input (only if TTY available)
-    4. Default: diff (for non-interactive environments)
+    parser.add_argument(
+        'input_path',
+        type=str,
+        nargs='?',
+        help='Input directory containing JSON files (default: test/input/)'
+    )
     
-    Returns:
-        'format' or 'diff'
-    """
-    # 1. Command line arguments take precedence
-    if len(sys.argv) > 1:
-        mode = sys.argv[1].lower()
-        if mode in ['format', 'diff']:
-            return mode
-        else:
-            print(f"[FAIL] Invalid mode: {mode}")
-            print("       Valid modes: format, diff")
-            print()
-            print("Usage:")
-            print("  python main.py format    # Format files and save to output/")
-            print("  python main.py diff      # Generate diff files to diff/")
-            print("  python main.py           # Interactive mode selection")
-            sys.exit(1)
+    parser.add_argument(
+        '--in-place',
+        action='store_true',
+        help='Format files in-place (modify original files)'
+    )
     
-    # 2. Environment Variables (for CI/CD)
-    if 'MAA_FORMAT_MODE' in os.environ:
-        mode = os.environ['MAA_FORMAT_MODE'].lower()
-        if mode in ['format', 'diff']:
-            print(f"[INFO] Mode from environment variable: {mode}")
-            return mode
-        else:
-            print(f"[WARN] Invalid MAA_FORMAT_MODE: {mode}, ignoring")
+    parser.add_argument(
+        '--diff-only',
+        action='store_true',
+        help='Only generate diff files without modifying originals'
+    )
     
-    # 3. Interactive selection (only when TTY is available)
-    if sys.stdin.isatty():
-        print("Select operation mode:")
-        print("  1. Format - Format files and save to output/")
-        print("  2. Diff   - Generate diff files only to diff/")
-        print()
-        
-        while True:
-            try:
-                choice = input("Enter your choice (1/2): ").strip()
-                if choice == '1':
-                    return 'format'
-                elif choice == '2':
-                    return 'diff'
-                else:
-                    print("[WARN] Invalid choice, please enter 1 or 2")
-            except KeyboardInterrupt:
-                print("\n[FAIL] Operation cancelled")
-                sys.exit(1)
-            except EOFError:
-                print("\n[FAIL] Operation cancelled")
-                sys.exit(1)
-    else:
-        # 4. Non-interactive environment default
-        print("[INFO] Non-interactive environment detected (no TTY)")
-        print("[INFO] Using default mode: diff")
-        return 'diff'
+    parser.add_argument(
+        '--diff-dir',
+        type=str,
+        help='Directory to save diff files (default: <input_path>/../diff/)'
+    )
+    
+    parser.add_argument(
+        '--output-dir',
+        type=str,
+        help='Output directory for formatted files (only used without --in-place)'
+    )
+    
+    parser.add_argument(
+        '--config',
+        type=str,
+        help='Path to .maapipeline-format config file'
+    )
+    
+    parser.add_argument(
+        '--yes', '-y',
+        action='store_true',
+        help='Skip confirmation prompts (for CI/CD)'
+    )
+    
+    return parser.parse_args()
 
 
 # ============================================================================
@@ -631,38 +501,80 @@ def main():
     print("=" * 70)
     print()
     
-    # Initialize paths
-    script_dir = Path(__file__).parent.parent
-    input_dir = script_dir / "test" / "input"
-    output_dir = script_dir / "test" / "output"
-    diff_dir = script_dir / "test" / "diff"
+    # Parse arguments
+    args = parse_arguments()
     
-    print(f"[DIR] Project root: {script_dir}")
-    print(f"[IN]  Input dir:    {input_dir}")
-    print()
-    
-    # Parse operation mode
-    mode = parse_mode()
-    print()
-    
-    # Display mode information
-    if mode == 'format':
-        print(f"[INFO] Mode: Format")
-        print(f"[OUT] Output dir:   {output_dir}")
+    # Determine input directory
+    if args.input_path:
+        input_dir = Path(args.input_path).resolve()
     else:
-        print(f"[INFO] Mode: Diff")
-        print(f"[OUT] Diff dir:     {diff_dir}")
+        script_dir = Path(__file__).parent.parent
+        input_dir = script_dir / "test" / "input"
+    
+    if not input_dir.exists():
+        print(f"[FAIL] Input directory not found: {input_dir}")
+        return
+    
+    print(f"[DIR] Input directory: {input_dir}")
+    
+    # Determine operation mode
+    if args.diff_only:
+        mode = 'diff'
+    elif args.in_place:
+        mode = 'in-place'
+    else:
+        # Interactive mode selection
+        if not sys.stdin.isatty() or args.yes:
+            mode = 'diff'
+            print(f"[INFO] Default mode: diff (non-interactive)")
+        else:
+            print("\nSelect operation mode:")
+            print("  1. Format in-place - Modify original files")
+            print("  2. Diff only       - Generate diff files only")
+            print("  3. Both            - Format in-place and generate diffs")
+            print()
+            
+            while True:
+                try:
+                    choice = input("Enter your choice (1/2/3): ").strip()
+                    if choice == '1':
+                        mode = 'in-place'
+                        break
+                    elif choice == '2':
+                        mode = 'diff'
+                        break
+                    elif choice == '3':
+                        mode = 'both'
+                        break
+                    else:
+                        print("[WARN] Invalid choice, please enter 1, 2, or 3")
+                except (KeyboardInterrupt, EOFError):
+                    print("\n[FAIL] Operation cancelled")
+                    return
+    
+    # Handle 'both' mode
+    generate_diff = mode in ['diff', 'both']
+    format_in_place = mode in ['in-place', 'both']
+    
+    # Determine diff directory
+    if generate_diff:
+        if args.diff_dir:
+            diff_dir = Path(args.diff_dir).resolve()
+        else:
+            diff_dir = input_dir.parent / "diff"
+        print(f"[DIR] Diff directory:  {diff_dir}")
+    
+    # Determine output directory (only for non-in-place mode)
+    if not format_in_place and args.output_dir:
+        output_dir = Path(args.output_dir).resolve()
+        print(f"[DIR] Output directory: {output_dir}")
+    
     print()
     
     # Load configuration
-    config = load_config(search_from=script_dir)
+    config_path = Path(args.config) if args.config else None
+    config = load_config(config_path=config_path, search_from=input_dir)
     print()
-    
-    # Check input directory
-    if not input_dir.exists():
-        print(f"[FAIL] Input directory not found: {input_dir}")
-        print(f"       Please ensure correct directory structure")
-        return
     
     # Scan JSON files
     print("[SCAN] Scanning JSON files...")
@@ -675,23 +587,28 @@ def main():
     print(f"[OK] Found {len(json_files)} JSON files")
     print()
     
-    # Display file list
+    # Display file list (limit to first 10)
     print("[LIST] File list:")
-    for i, file in enumerate(json_files, 1):
+    display_files = json_files[:10]
+    for i, file in enumerate(display_files, 1):
         relative = file.relative_to(input_dir)
         size = format_size(file.stat().st_size)
         print(f"       {i:3d}. {relative} ({size})")
+    
+    if len(json_files) > 10:
+        print(f"       ... and {len(json_files) - 10} more files")
     print()
     
     # Confirm processing
-    if mode == 'format':
-        prompt = f"Format these {len(json_files)} files? (y/n): "
+    if format_in_place and generate_diff:
+        prompt = f"Format {len(json_files)} files in-place AND generate diffs? (y/n): "
+    elif format_in_place:
+        prompt = f"Format {len(json_files)} files in-place? (y/n): "
     else:
-        prompt = f"Generate diff for these {len(json_files)} files? (y/n): "
+        prompt = f"Generate diff for {len(json_files)} files? (y/n): "
     
-    # Automatic confirmation in non-interactive environments
-    if not sys.stdin.isatty():
-        print(f"[INFO] Non-interactive mode: auto-confirming processing")
+    if not sys.stdin.isatty() or args.yes:
+        print(f"[INFO] Auto-confirming (--yes flag or non-interactive mode)")
         confirm = 'y'
     else:
         try:
@@ -699,19 +616,18 @@ def main():
             if confirm != 'y':
                 print("[FAIL] Operation cancelled")
                 return
-        except KeyboardInterrupt:
-            print("\n[FAIL] Operation cancelled")
-            return
-        except EOFError:
+        except (KeyboardInterrupt, EOFError):
             print("\n[FAIL] Operation cancelled")
             return
     
     print()
     print("=" * 70)
-    if mode == 'format':
-        print("[START] Starting batch formatting...")
+    if format_in_place and generate_diff:
+        print("[START] Formatting in-place and generating diffs...")
+    elif format_in_place:
+        print("[START] Formatting files in-place...")
     else:
-        print("[START] Starting diff generation...")
+        print("[START] Generating diff files...")
     print("=" * 70)
     print()
     
@@ -730,49 +646,41 @@ def main():
         
         print(f"[{i}/{len(json_files)}] Processing: {relative_path}")
         
-        if mode == 'format':
-            # Format mode
-            output_path = get_output_path(
-                input_path, 
-                input_dir, 
-                output_dir, 
-                config["file_handling"]["output_suffix"]
-            )
-            
-            success, error_msg = formatter.format_file(input_path, output_path)
-            
-            if success:
-                success_count += 1
-                output_size = format_size(output_path.stat().st_size)
-                print(f"            [OK] -> {output_path.relative_to(output_dir)} ({output_size})")
-            else:
-                fail_count += 1
-                failed_files.append((relative_path, error_msg))
-                print(f"            [FAIL] {error_msg}")
+        file_has_error = False
         
-        else:
-            # Diff mode
-            output_path = get_output_path(
-                input_path,
-                input_dir,
-                diff_dir,
-                config["file_handling"]["diff_suffix"]
-            )
+        # Generate diff if requested
+        if generate_diff:
+            diff_output_path = diff_dir / relative_path.parent / f"{relative_path.name}.diff"
             
-            success, has_changes, error_msg = formatter.generate_diff(input_path, output_path)
+            success, has_changes, error_msg = formatter.generate_diff(input_path, diff_output_path)
             
             if success:
                 if has_changes:
-                    success_count += 1
-                    output_size = format_size(output_path.stat().st_size)
-                    print(f"            [OK] Changes detected -> {output_path.relative_to(diff_dir)} ({output_size})")
+                    diff_size = format_size(diff_output_path.stat().st_size)
+                    print(f"            [DIFF] Generated -> {diff_output_path.relative_to(diff_dir)} ({diff_size})")
                 else:
                     unchanged_count += 1
-                    print(f"            [INFO] No changes needed")
+                    print(f"            [INFO] No formatting changes needed")
+            else:
+                file_has_error = True
+                failed_files.append((relative_path, error_msg))
+                print(f"            [FAIL] Diff generation failed: {error_msg}")
+        
+        # Format in-place if requested
+        if format_in_place and not file_has_error:
+            success, error_msg = formatter.format_file(input_path, input_path)
+            
+            if success:
+                success_count += 1
+                file_size = format_size(input_path.stat().st_size)
+                print(f"            [OK] Formatted in-place ({file_size})")
             else:
                 fail_count += 1
                 failed_files.append((relative_path, error_msg))
-                print(f"            [FAIL] {error_msg}")
+                print(f"            [FAIL] Formatting failed: {error_msg}")
+        elif not file_has_error and not generate_diff:
+            # Only count as success if we're not generating diffs
+            success_count += 1
         
         print()
     
@@ -781,26 +689,19 @@ def main():
     duration = (end_time - start_time).total_seconds()
     
     print("=" * 70)
-    if mode == 'format':
-        print("[STAT] Formatting completed! Statistics:")
-    else:
-        print("[STAT] Diff generation completed! Statistics:")
+    print("[STAT] Processing completed! Statistics:")
     print("=" * 70)
     
-    if mode == 'format':
-        print(f"[OK]   Success: {success_count} files formatted")
-        print(f"[FAIL] Failed:  {fail_count} files")
-    else:
-        print(f"[OK]   Files with changes: {success_count}")
+    if format_in_place:
+        print(f"[OK]   Files formatted: {success_count}")
+    if generate_diff:
+        print(f"[OK]   Files with changes: {len(json_files) - unchanged_count - fail_count}")
         print(f"[INFO] Files unchanged:    {unchanged_count}")
-        print(f"[FAIL] Failed:             {fail_count}")
+    print(f"[FAIL] Failed:             {fail_count}")
+    print(f"[TIME] Elapsed:            {duration:.2f} seconds")
     
-    print(f"[TIME] Elapsed: {duration:.2f} seconds")
-    
-    if mode == 'format':
-        print(f"[DIR]  Output:  {output_dir}")
-    else:
-        print(f"[DIR]  Output:  {diff_dir}")
+    if generate_diff:
+        print(f"[DIR]  Diffs saved to:     {diff_dir}")
     
     print()
     
