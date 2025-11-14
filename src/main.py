@@ -3,10 +3,13 @@
 """
 Maa Pipeline JSON Formatter
 Format MaaFramework Pipeline JSON files (Batch Processing Mode)
+Supports format and diff modes
 """
 
 import json
 import re
+import sys
+import difflib
 from typing import Any, Dict, List, Union, Tuple, Optional
 from pathlib import Path
 from datetime import datetime
@@ -41,7 +44,9 @@ DEFAULT_CONFIG = {
         "preserve_comments": True,
         "output_suffix": ".formatted",
         "encoding": "utf-8",
-        "newline": "LF"
+        "newline": "LF",
+        "diff_context_lines": 3,
+        "diff_suffix": ".diff"
     }
 }
 
@@ -193,6 +198,14 @@ def _validate_config(config: Dict) -> Tuple[bool, List[str]]:
             if not isinstance(threshold, int) or threshold < 0:
                 errors.append(f"Invalid simple_array_threshold: {threshold}")
     
+    # File handling validation
+    if "file_handling" in config:
+        fh_cfg = config["file_handling"]
+        if "diff_context_lines" in fh_cfg:
+            context = fh_cfg["diff_context_lines"]
+            if not isinstance(context, int) or context < 0:
+                errors.append(f"Invalid diff_context_lines: {context}")
+    
     return (len(errors) == 0, errors)
 
 
@@ -253,6 +266,8 @@ class MaaPipelineFormatter:
         self.output_suffix = fh_cfg["output_suffix"]
         self.encoding = fh_cfg["encoding"]
         self.newline = "\r\n" if fh_cfg["newline"] == "CRLF" else "\n"
+        self.diff_context_lines = fh_cfg["diff_context_lines"]
+        self.diff_suffix = fh_cfg["diff_suffix"]
     
     def _is_simple_value(self, value: Any) -> bool:
         """Check if value is simple (string/number/bool/null)"""
@@ -385,6 +400,39 @@ class MaaPipelineFormatter:
         text = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)
         return text
     
+    def format_text(self, text: str) -> Tuple[bool, str, str]:
+        """
+        Format JSON text
+        
+        Args:
+            text: Original JSON text
+        
+        Returns:
+            (success, formatted_text, error_message)
+        """
+        try:
+            text_without_comments = self._remove_comments(text)
+            
+            try:
+                data = json.loads(text_without_comments)
+            except json.JSONDecodeError as e:
+                return False, "", f"JSON parse error: {e}"
+            
+            formatted = self._format_object(data, 0, is_root=True)
+            
+            if self.preserve_comments:
+                try:
+                    final_text = self._preserve_comments(text, formatted)
+                except Exception:
+                    final_text = formatted
+            else:
+                final_text = formatted
+            
+            return True, final_text, ""
+            
+        except Exception as e:
+            return False, "", str(e)
+    
     def format_file(self, input_path: Union[str, Path], output_path: Union[str, Path]) -> Tuple[bool, str]:
         """
         Format JSON file
@@ -403,32 +451,70 @@ class MaaPipelineFormatter:
             with open(input_path, 'r', encoding=self.encoding) as f:
                 original_text = f.read()
             
-            text_without_comments = self._remove_comments(original_text)
+            success, formatted_text, error_msg = self.format_text(original_text)
             
-            try:
-                data = json.loads(text_without_comments)
-            except json.JSONDecodeError as e:
-                return False, f"JSON parse error: {e}"
-            
-            formatted = self._format_object(data, 0, is_root=True)
-            
-            if self.preserve_comments:
-                try:
-                    final_text = self._preserve_comments(original_text, formatted)
-                except Exception:
-                    final_text = formatted
-            else:
-                final_text = formatted
+            if not success:
+                return False, error_msg
             
             output_path.parent.mkdir(parents=True, exist_ok=True)
             
             with open(output_path, 'w', encoding=self.encoding, newline=self.newline) as f:
-                f.write(final_text)
+                f.write(formatted_text)
             
             return True, ""
             
         except Exception as e:
             return False, str(e)
+    
+    def generate_diff(self, input_path: Union[str, Path], output_path: Union[str, Path]) -> Tuple[bool, bool, str]:
+        """
+        Generate unified diff file
+        
+        Args:
+            input_path: Input file path
+            output_path: Output diff file path
+        
+        Returns:
+            (success, has_changes, error_message)
+        """
+        input_path = Path(input_path)
+        output_path = Path(output_path)
+        
+        try:
+            with open(input_path, 'r', encoding=self.encoding) as f:
+                original_text = f.read()
+            
+            success, formatted_text, error_msg = self.format_text(original_text)
+            
+            if not success:
+                return False, False, error_msg
+            
+            # Generate unified diff
+            original_lines = original_text.splitlines(keepends=True)
+            formatted_lines = formatted_text.splitlines(keepends=True)
+            
+            diff_lines = list(difflib.unified_diff(
+                original_lines,
+                formatted_lines,
+                fromfile=f"a/{input_path.name}",
+                tofile=f"b/{input_path.name}",
+                n=self.diff_context_lines,
+                lineterm=''
+            ))
+            
+            # Check if there are any changes
+            has_changes = len(diff_lines) > 0
+            
+            if has_changes:
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                with open(output_path, 'w', encoding=self.encoding, newline=self.newline) as f:
+                    f.write('\n'.join(diff_lines))
+            
+            return True, has_changes, ""
+            
+        except Exception as e:
+            return False, False, str(e)
 
 
 # ============================================================================
@@ -446,7 +532,14 @@ def get_output_path(input_path: Path, input_dir: Path, output_dir: Path, suffix:
     """Calculate output path preserving directory structure"""
     relative_path = input_path.relative_to(input_dir)
     output_path = output_dir / relative_path
-    output_path = output_path.with_stem(f"{output_path.stem}{suffix}")
+    
+    if suffix.startswith('.'):
+        # Extension-like suffix (e.g., .diff)
+        output_path = output_path.parent / f"{output_path.name}{suffix}"
+    else:
+        # Stem suffix (e.g., .formatted)
+        output_path = output_path.with_stem(f"{output_path.stem}{suffix}")
+    
     return output_path
 
 
@@ -459,12 +552,57 @@ def format_size(size_bytes: int) -> str:
     return f"{size_bytes:.2f} TB"
 
 
+def parse_mode() -> str:
+    """
+    Parse operation mode from command line or interactive input
+    
+    Returns:
+        'format' or 'diff'
+    """
+    # Check command line arguments
+    if len(sys.argv) > 1:
+        mode = sys.argv[1].lower()
+        if mode in ['format', 'diff']:
+            return mode
+        else:
+            print(f"[FAIL] Invalid mode: {mode}")
+            print("       Valid modes: format, diff")
+            print()
+            print("Usage:")
+            print("  python main.py format    # Format files and save to output/")
+            print("  python main.py diff      # Generate diff files to diff/")
+            print("  python main.py           # Interactive mode selection")
+            sys.exit(1)
+    
+    # Interactive selection
+    print("Select operation mode:")
+    print("  1. Format - Format files and save to output/")
+    print("  2. Diff   - Generate diff files only to diff/")
+    print()
+    
+    while True:
+        try:
+            choice = input("Enter your choice (1/2): ").strip()
+            if choice == '1':
+                return 'format'
+            elif choice == '2':
+                return 'diff'
+            else:
+                print("[WARN] Invalid choice, please enter 1 or 2")
+        except KeyboardInterrupt:
+            print("\n[FAIL] Operation cancelled")
+            sys.exit(1)
+        except EOFError:
+            print("\n[FAIL] Operation cancelled")
+            sys.exit(1)
+
+
 # ============================================================================
 # Main Function
 # ============================================================================
 
 def main():
-    """Main function: Batch formatting"""
+    """Main function: Batch formatting or diff generation"""
     print("=" * 70)
     print(" " * 10 + "Maa Pipeline JSON Formatter (Batch Mode)")
     print(" " * 5 + "MaaFramework Task Pipeline JSON Batch Formatting Tool")
@@ -475,10 +613,23 @@ def main():
     script_dir = Path(__file__).parent.parent
     input_dir = script_dir / "test" / "input"
     output_dir = script_dir / "test" / "output"
+    diff_dir = script_dir / "test" / "diff"
     
     print(f"[DIR] Project root: {script_dir}")
     print(f"[IN]  Input dir:    {input_dir}")
-    print(f"[OUT] Output dir:   {output_dir}")
+    print()
+    
+    # Parse operation mode
+    mode = parse_mode()
+    print()
+    
+    # Display mode information
+    if mode == 'format':
+        print(f"[INFO] Mode: Format")
+        print(f"[OUT] Output dir:   {output_dir}")
+    else:
+        print(f"[INFO] Mode: Diff")
+        print(f"[OUT] Diff dir:     {diff_dir}")
     print()
     
     # Load configuration
@@ -511,47 +662,90 @@ def main():
     print()
     
     # Confirm processing
+    if mode == 'format':
+        prompt = f"Format these {len(json_files)} files? (y/n): "
+    else:
+        prompt = f"Generate diff for these {len(json_files)} files? (y/n): "
+    
     try:
-        confirm = input(f"Format these {len(json_files)} files? (y/n): ").strip().lower()
+        confirm = input(prompt).strip().lower()
         if confirm != 'y':
             print("[FAIL] Operation cancelled")
             return
     except KeyboardInterrupt:
         print("\n[FAIL] Operation cancelled")
         return
+    except EOFError:
+        print("\n[FAIL] Operation cancelled")
+        return
     
     print()
     print("=" * 70)
-    print("[START] Starting batch formatting...")
+    if mode == 'format':
+        print("[START] Starting batch formatting...")
+    else:
+        print("[START] Starting diff generation...")
     print("=" * 70)
     print()
     
     # Batch processing
     formatter = MaaPipelineFormatter(config)
-    output_suffix = config["file_handling"]["output_suffix"]
     
     success_count = 0
     fail_count = 0
+    unchanged_count = 0
     failed_files = []
     
     start_time = datetime.now()
     
     for i, input_path in enumerate(json_files, 1):
         relative_path = input_path.relative_to(input_dir)
-        output_path = get_output_path(input_path, input_dir, output_dir, output_suffix)
         
         print(f"[{i}/{len(json_files)}] Processing: {relative_path}")
         
-        success, error_msg = formatter.format_file(input_path, output_path)
+        if mode == 'format':
+            # Format mode
+            output_path = get_output_path(
+                input_path, 
+                input_dir, 
+                output_dir, 
+                config["file_handling"]["output_suffix"]
+            )
+            
+            success, error_msg = formatter.format_file(input_path, output_path)
+            
+            if success:
+                success_count += 1
+                output_size = format_size(output_path.stat().st_size)
+                print(f"            [OK] -> {output_path.relative_to(output_dir)} ({output_size})")
+            else:
+                fail_count += 1
+                failed_files.append((relative_path, error_msg))
+                print(f"            [FAIL] {error_msg}")
         
-        if success:
-            success_count += 1
-            output_size = format_size(output_path.stat().st_size)
-            print(f"            [OK] -> {output_path.relative_to(output_dir)} ({output_size})")
         else:
-            fail_count += 1
-            failed_files.append((relative_path, error_msg))
-            print(f"            [FAIL] {error_msg}")
+            # Diff mode
+            output_path = get_output_path(
+                input_path,
+                input_dir,
+                diff_dir,
+                config["file_handling"]["diff_suffix"]
+            )
+            
+            success, has_changes, error_msg = formatter.generate_diff(input_path, output_path)
+            
+            if success:
+                if has_changes:
+                    success_count += 1
+                    output_size = format_size(output_path.stat().st_size)
+                    print(f"            [OK] Changes detected -> {output_path.relative_to(diff_dir)} ({output_size})")
+                else:
+                    unchanged_count += 1
+                    print(f"            [INFO] No changes needed")
+            else:
+                fail_count += 1
+                failed_files.append((relative_path, error_msg))
+                print(f"            [FAIL] {error_msg}")
         
         print()
     
@@ -560,12 +754,27 @@ def main():
     duration = (end_time - start_time).total_seconds()
     
     print("=" * 70)
-    print("[STAT] Processing completed! Statistics:")
+    if mode == 'format':
+        print("[STAT] Formatting completed! Statistics:")
+    else:
+        print("[STAT] Diff generation completed! Statistics:")
     print("=" * 70)
-    print(f"[OK]   Success: {success_count} files")
-    print(f"[FAIL] Failed:  {fail_count} files")
+    
+    if mode == 'format':
+        print(f"[OK]   Success: {success_count} files formatted")
+        print(f"[FAIL] Failed:  {fail_count} files")
+    else:
+        print(f"[OK]   Files with changes: {success_count}")
+        print(f"[INFO] Files unchanged:    {unchanged_count}")
+        print(f"[FAIL] Failed:             {fail_count}")
+    
     print(f"[TIME] Elapsed: {duration:.2f} seconds")
-    print(f"[DIR]  Output:  {output_dir}")
+    
+    if mode == 'format':
+        print(f"[DIR]  Output:  {output_dir}")
+    else:
+        print(f"[DIR]  Output:  {diff_dir}")
+    
     print()
     
     # Failed files details
